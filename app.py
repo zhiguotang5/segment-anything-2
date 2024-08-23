@@ -98,6 +98,7 @@ class PromptGUI(object):
         self.img_paths = [
             f"{img_dir}/{p}" for p in sorted(os.listdir(img_dir)) if isimage(p)
         ]
+        guru.debug(f"loaded {len(self.img_paths)} in image dir {img_dir}")
 
         return len(self.img_paths)
 
@@ -113,12 +114,14 @@ class PromptGUI(object):
         return image
 
     def get_sam_features(self) -> tuple[str, np.ndarray | None]:
+        guru.debug(f"Getting sam features")
         self.inference_state = self.sam_model.init_state(video_path=self.img_dir)
-        self.sam_model.reset_state(self.inference_state)
+        # self.sam_model.reset_state(self.inference_state)
         msg = (
             "SAM features extracted. "
             "Click points to update mask, and submit when ready to start tracking"
         )
+        guru.debug(f"image shape: {self.image.shape}")
         return msg, self.image
 
     def set_positive(self) -> str:
@@ -297,7 +300,6 @@ def make_demo(
             vid_name_field = gr.Text(vid_name, label="Video subdirectory name")
             img_name_field = gr.Text(img_name, label="Image subdirectory name")
             mask_name_field = gr.Text(mask_name, label="Mask subdirectory name")
-            seq_name_field = gr.Text(None, label="Sequence name", interactive=False)
 
         with gr.Row():
             with gr.Column():
@@ -313,13 +315,11 @@ def make_demo(
                     extract_button = gr.Button("Extract frames")
 
             with gr.Column():
-                img_dirs = listdir(img_root)
-                img_dirs_field = gr.Dropdown(
-                    label="Image directories", choices=img_dirs
-                )
+                img_dir = img_root
                 img_dir_field = gr.Text(
-                    None, label="Input directory", interactive=False
+                    img_dir, label="Input directory", interactive=True
                 )
+                prompts.set_img_dir(img_dir)
                 frame_index = gr.Slider(
                     label="Frame index",
                     minimum=0,
@@ -345,7 +345,7 @@ def make_demo(
                 submit_button = gr.Button("Submit mask for tracking")
                 final_video = gr.Video(label="Masked video")
                 mask_dir_field = gr.Text(
-                    None, label="Path to save masks", interactive=False
+                    f"{root_dir}/{mask_name}", label="Path to save masks", interactive=False
                 )
                 save_button = gr.Button("Save masks")
 
@@ -357,32 +357,30 @@ def make_demo(
 
         def update_img_root(root_dir, img_name):
             img_root = f"{root_dir}/{img_name}"
-            img_dirs = listdir(img_root)
-            guru.debug(f"Updating img dirs: {img_dirs=}")
-            return img_root, img_dirs
+            guru.debug(f"Updating img dir: {img_root=}")
+            return img_root
 
-        def update_mask_dir(root_dir, mask_name, seq_name):
-            return f"{root_dir}/{mask_name}/{seq_name}"
+        def update_mask_dir(root_dir, mask_name):
+            return f"{root_dir}/{mask_name}"
 
-        def update_root_paths(root_dir, vid_name, img_name, mask_name, seq_name):
+        def update_root_paths(root_dir, vid_name, img_name, mask_name):
             return (
                 update_vid_root(root_dir, vid_name),
                 update_img_root(root_dir, img_name),
-                update_mask_dir(root_dir, mask_name, seq_name),
+                update_mask_dir(root_dir, mask_name),
             )
 
         def select_video(root_dir, vid_name, seq_file):
-            seq_name = os.path.splitext(seq_file)[0]
             guru.debug(f"Selected video: {seq_file=}")
             vid_path = f"{root_dir}/{vid_name}/{seq_file}"
-            return seq_name, vid_path
+            return vid_path
 
         def extract_frames(
                 root_dir, vid_name, img_name, vid_file, start, end, fps, height, ext="png"
         ):
             seq_name = os.path.splitext(vid_file)[0]
             vid_path = f"{root_dir}/{vid_name}/{vid_file}"
-            out_dir = f"{root_dir}/{img_name}/{seq_name}"
+            out_dir = f"{root_dir}/{img_name}"
             guru.debug(f"Extracting frames to {out_dir}")
             os.makedirs(out_dir, exist_ok=True)
 
@@ -399,17 +397,15 @@ def make_demo(
             )
             print(cmd)
             subprocess.call(cmd, shell=True)
-            img_root = f"{root_dir}/{img_name}"
-            img_dirs = listdir(img_root)
-            return out_dir, img_dirs
+            return out_dir
 
         def select_image_dir(root_dir, img_name, seq_name):
             img_dir = f"{root_dir}/{img_name}/{seq_name}"
             guru.debug(f"Selected image dir: {img_dir}")
             return seq_name, img_dir
 
-        def update_image_dir(root_dir, img_name, seq_name):
-            img_dir = f"{root_dir}/{img_name}/{seq_name}"
+        def update_image_dir(root_dir, img_name):
+            img_dir = f"{root_dir}/{img_name}"
             num_imgs = prompts.set_img_dir(img_dir)
             slider = gr.Slider(minimum=0, maximum=num_imgs - 1, value=0, step=1)
             message = (
@@ -437,23 +433,19 @@ def make_demo(
                 vid_name_field,
                 img_name_field,
                 mask_name_field,
-                seq_name_field,
             ],
-            outputs=[vid_files_field, img_dirs_field, mask_dir_field],
+            outputs=[vid_files_field, img_dir_field, mask_dir_field],
         )
+
         vid_name_field.submit(
             update_vid_root,
             [root_dir_field, vid_name_field],
             outputs=[vid_files_field],
         )
-        img_name_field.submit(
-            update_img_root,
-            [root_dir_field, img_name_field],
-            outputs=[img_dirs_field],
-        )
+
         mask_name_field.submit(
             update_mask_dir,
-            [root_dir_field, mask_name_field, seq_name_field],
+            [root_dir_field, mask_name_field],
             outputs=[mask_dir_field],
         )
 
@@ -461,26 +453,14 @@ def make_demo(
         vid_files_field.select(
             select_video,
             [root_dir_field, vid_name_field, vid_files_field],
-            outputs=[seq_name_field, input_video_field],
+            outputs=[input_video_field],
         )
 
         # when the img_dir_field changes
         img_dir_field.change(
             update_image_dir,
-            [root_dir_field, img_name_field, seq_name_field],
+            [root_dir_field, img_name_field],
             [frame_index, instruction],
-        )
-        seq_name_field.change(
-            update_mask_dir,
-            [root_dir_field, mask_name_field, seq_name_field],
-            outputs=[mask_dir_field],
-        )
-
-        # selecting an image directory
-        img_dirs_field.select(
-            select_image_dir,
-            [root_dir_field, img_name_field, img_dirs_field],
-            [seq_name_field, img_dir_field],
         )
 
         # extracting frames from video
@@ -496,7 +476,7 @@ def make_demo(
                 sel_fps,
                 sel_height,
             ],
-            outputs=[img_dir_field, img_dirs_field],
+            outputs=[img_dir_field],
         )
 
         frame_index.change(prompts.set_input_image, [frame_index], [input_image])
@@ -524,8 +504,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8890)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/sam2_hiera_large.pt")
-    parser.add_argument("--model_cfg", type=str, default="sam2_hiera_l.yaml")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/sam2_hiera_tiny.pt")
+    parser.add_argument("--model_cfg", type=str, default="sam2_hiera_t.yaml")
     parser.add_argument("--root_dir", type=str, required=True)
     parser.add_argument("--vid_name", type=str, default="videos")
     parser.add_argument("--img_name", type=str, default="images")
