@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import torch
 
 # use bfloat16 for the entire notebook
@@ -206,13 +208,29 @@ class PromptGUI(object):
 
     def save_masks_to_dir(self, output_dir: str) -> str:
         assert self.color_masks_all is not None
+        meta_file = os.path.join(output_dir, "../space.json")
+        have_meta = False
+        if os.path.exists(meta_file) and os.path.isfile(meta_file):
+            have_meta = True
+            with open(meta_file, "r") as f:
+                space = json.load(f)
+            frames = sorted(space["frames"], key=lambda x: x["file_path"])
         os.makedirs(output_dir, exist_ok=True)
+        idx = 0
         for img_path, clr_mask, id_mask in zip(self.img_paths, self.color_masks_all, self.index_masks_all):
             name = os.path.basename(img_path)
             out_path = f"{output_dir}/{name}"
             iio.imwrite(out_path, clr_mask)
             np_out_path = f"{output_dir}/{name[:-4]}.npy"
+            if have_meta:
+                frames[idx].update({"mask_file_path": os.path.join(Path(np_out_path).parent.name, Path(np_out_path).name)})
             np.save(np_out_path, id_mask)
+            idx += 1
+
+        if have_meta:
+            space["frames"] = frames
+            with open(meta_file, "w") as f:
+                json.dump(space, f)
 
         message = f"Saved masks to {output_dir}!"
         guru.debug(message)
