@@ -15,6 +15,7 @@ if torch.cuda.get_device_properties(0).major >= 8:
 import colorsys
 import datetime
 import os
+import os.path as osp
 import subprocess
 
 import cv2
@@ -98,7 +99,7 @@ class PromptGUI(object):
         self._clear_image()
         self.img_dir = img_dir
         self.img_paths = [
-            f"{img_dir}/{p}" for p in sorted(os.listdir(img_dir)) if isimage(p)
+            osp.join(img_dir, p)for p in sorted(os.listdir(img_dir)) if isimage(p)
         ]
         guru.debug(f"loaded {len(self.img_paths)} in image dir {img_dir}")
 
@@ -219,9 +220,9 @@ class PromptGUI(object):
         idx = 0
         for img_path, clr_mask, id_mask in zip(self.img_paths, self.color_masks_all, self.index_masks_all):
             name = os.path.basename(img_path)
-            out_path = f"{output_dir}/{name}"
+            out_path = osp.join(output_dir, name)
             iio.imwrite(out_path, clr_mask)
-            np_out_path = f"{output_dir}/{name[:-4]}.npy"
+            np_out_path = osp.join(output_dir, f"{name[:-4]}.npy")
             if have_meta:
                 frames[idx].update({"mask_file_path": os.path.join(Path(np_out_path).parent.name, Path(np_out_path).name)})
             np.save(np_out_path, id_mask)
@@ -308,7 +309,7 @@ def make_demo(
         "Select a video file to extract frames from, "
         "or select an image directory with frames already extracted."
     )
-    vid_root, img_root = (f"{root_dir}/{vid_name}", f"{root_dir}/{img_name}")
+    vid_root, img_root = (osp.join(root_dir, vid_name), osp.join(root_dir, img_name))
     with gr.Blocks() as demo:
         instruction = gr.Textbox(
             start_instructions, label="Instruction", interactive=False
@@ -363,23 +364,23 @@ def make_demo(
                 submit_button = gr.Button("Submit mask for tracking")
                 final_video = gr.Video(label="Masked video")
                 mask_dir_field = gr.Text(
-                    f"{root_dir}/{mask_name}", label="Path to save masks", interactive=False
+                    str(osp.join(root_dir, mask_name)), label="Path to save masks", interactive=False
                 )
                 save_button = gr.Button("Save masks")
 
         def update_vid_root(root_dir, vid_name):
-            vid_root = f"{root_dir}/{vid_name}"
+            vid_root = osp.join(root_dir, vid_name)
             vid_paths = listdir(vid_root)
             guru.debug(f"Updating video paths: {vid_paths=}")
             return vid_paths
 
         def update_img_root(root_dir, img_name):
-            img_root = f"{root_dir}/{img_name}"
+            img_root = osp.join(root_dir, img_name)
             guru.debug(f"Updating img dir: {img_root=}")
             return img_root
 
         def update_mask_dir(root_dir, mask_name):
-            return f"{root_dir}/{mask_name}"
+            return osp.join(root_dir, mask_name)
 
         def update_root_paths(root_dir, vid_name, img_name, mask_name):
             return (
@@ -390,15 +391,15 @@ def make_demo(
 
         def select_video(root_dir, vid_name, seq_file):
             guru.debug(f"Selected video: {seq_file=}")
-            vid_path = f"{root_dir}/{vid_name}/{seq_file}"
+            vid_path = osp.join(root_dir, vid_name, seq_file)
             return vid_path
 
         def extract_frames(
                 root_dir, vid_name, img_name, vid_file, start, end, fps, height, ext="png"
         ):
             seq_name = os.path.splitext(vid_file)[0]
-            vid_path = f"{root_dir}/{vid_name}/{vid_file}"
-            out_dir = f"{root_dir}/{img_name}"
+            vid_path = osp.join(root_dir, vid_name, vid_file)
+            out_dir = osp.join(root_dir, img_name)
             guru.debug(f"Extracting frames to {out_dir}")
             os.makedirs(out_dir, exist_ok=True)
 
@@ -418,12 +419,12 @@ def make_demo(
             return out_dir
 
         def select_image_dir(root_dir, img_name, seq_name):
-            img_dir = f"{root_dir}/{img_name}/{seq_name}"
+            img_dir = osp.join(root_dir, img_name, seq_name)
             guru.debug(f"Selected image dir: {img_dir}")
             return seq_name, img_dir
 
         def update_image_dir(root_dir, img_name):
-            img_dir = f"{root_dir}/{img_name}"
+            img_dir = osp.join(root_dir, img_name)
             num_imgs = prompts.set_img_dir(img_dir)
             slider = gr.Slider(minimum=0, maximum=num_imgs - 1, value=0, step=1)
             message = (
@@ -539,4 +540,4 @@ if __name__ == "__main__":
         args.vid_name,
         args.img_name,
     )
-    demo.launch(server_port=args.port)
+    demo.launch(server_port=args.port, share=True)
