@@ -61,7 +61,7 @@ class PromptGUI(object):
         self.selected_points.clear()
         self.selected_labels.clear()
         message = "Cleared points, select new points to update mask"
-        return None, None, message
+        return self.image, None, message
 
     def add_new_mask(self):
         self.cur_mask_idx += 1
@@ -121,17 +121,19 @@ class PromptGUI(object):
         # self.sam_model.reset_state(self.inference_state)
         msg = (
             "SAM features extracted. "
-            "Click points to update mask, and submit when ready to start tracking"
+            "Click input image to add points, update mask, and submit when ready to start tracking"
         )
         guru.debug(f"image shape: {self.image.shape}")
-        return msg, self.image
+        return msg
 
     def set_positive(self) -> str:
         self.cur_label_val = 1.0
+        guru.debug("Selected positive label")
         return "Selecting positive points. Submit the mask to start tracking"
 
     def set_negative(self) -> str:
         self.cur_label_val = 0.0
+        guru.debug("Selected negative label")
         return "Selecting negative points. Submit the mask to start tracking"
 
     def add_point(self, frame_idx, i, j):
@@ -223,7 +225,8 @@ class PromptGUI(object):
             iio.imwrite(out_path, clr_mask)
             np_out_path = f"{output_dir}/{name[:-4]}.npy"
             if have_meta:
-                frames[idx].update({"mask_file_path": os.path.join(Path(np_out_path).parent.name, Path(np_out_path).name)})
+                frames[idx].update(
+                    {"mask_file_path": os.path.join(Path(output_dir).name, Path(np_out_path).name)})
             np.save(np_out_path, id_mask)
             idx += 1
 
@@ -296,12 +299,21 @@ def listdir(vid_dir):
 
 def make_demo(checkpoint_dir, model_cfg):
     prompts = PromptGUI(checkpoint_dir, model_cfg)
+    start_instructions = (
+        "Select a video file to extract frames from, "
+        "or select an image directory with frames already extracted."
+    )
 
     with gr.Blocks() as demo:
+        instruction = gr.Textbox(
+            start_instructions, label="Instruction", interactive=False
+        )
         with gr.Tab("Input images"):
             with gr.Row():
                 with gr.Column():
                     image_dir_textbox = gr.Textbox(value=None, label="Input image directory", interactive=True)
+
+                    # Initialize slider range to update dynamically
                     frame_index_slider = gr.Slider(
                         label="Frame index",
                         minimum=0,
@@ -323,16 +335,80 @@ def make_demo(checkpoint_dir, model_cfg):
 
                 with gr.Column():
                     input_image = gr.Image(
-                        prompts.set_input_image(0),
+                        prompts.set_input_image(0),  # Static, needs to be dynamic
                         label="Input Frame",
                         every=1,
                     )
 
-                    output_img = gr.Image(label="Current selection", interactive=False)
                     final_video = gr.Video(label="Masked video")
 
         with gr.Tab("Input video"):
             video_file_field = gr.Video(label="Upload video")
+
+        # Function to dynamically update slider and image
+        def update_image_dir(img_dir: str):
+            num_img = prompts.set_img_dir(img_dir)
+            slider_update = gr.update(maximum=num_img - 1, value=0)
+            image_update = gr.update(value=prompts.set_input_image(0))  # Reset image to first frame
+            mask_dir_update = gr.update(value=str(Path(img_dir).parent / "mask"))
+            msg = (
+                f"Loaded {num_img} images from {img_dir}. Choose a frame to run SAM!"
+            )
+            return slider_update, image_update, mask_dir_update, msg
+
+        # Function to dynamically update image based on slider value
+        def update_image(frame_index):
+            return gr.update(value=prompts.set_input_image(frame_index))
+
+        def update_point_type(point_type: str):
+            assert point_type in ["include", "exclude"]
+            if point_type == "include":
+                prompts.set_positive()
+            else:
+                prompts.set_negative()
+            return
+
+        def get_select_coords(frame_idx, img, evt: gr.SelectData):
+            i = evt.index[1]  # type: ignore
+            j = evt.index[0]  # type: ignore
+            index_mask = prompts.add_point(frame_idx, i, j)
+            guru.debug(f"{index_mask.shape=}")
+            palette = get_hls_palette(index_mask.max() + 1)
+            color_mask = palette[index_mask]
+            out_u = compose_img_mask(img, color_mask)
+            out = draw_points(out_u, prompts.selected_points, prompts.selected_labels)
+            return out
+
+        # Attach event handlers
+        image_dir_textbox.submit(
+            update_image_dir,
+            [image_dir_textbox],
+            [frame_index_slider, input_image, mask_dir_field, instruction]  # Include input_image to reset it
+        ).then(prompts.get_sam_features, outputs=[instruction])
+
+        frame_index_slider.change(
+            prompts.set_input_image,
+            [frame_index_slider],
+            [input_image]
+        )
+
+        input_image.select(get_select_coords,
+                    [frame_index_slider, input_image],
+                    [input_image])
+
+        point_type.change(
+            update_point_type,
+            [point_type],
+        )
+
+        clear_points_btn.click(prompts.clear_points,
+                               outputs=[input_image, final_video, instruction])
+
+        submit_button.click(prompts.run_tracker, outputs=[final_video, instruction])
+        save_button.click(
+            prompts.save_masks_to_dir, [mask_dir_field], outputs=[instruction]
+        )
+
     return demo
 
 
