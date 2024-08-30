@@ -325,13 +325,14 @@ def make_demo(checkpoint_dir, model_cfg):
                     with gr.Row():
                         point_type = gr.Radio(label="point type", choices=["include", "exclude"], value="include")
                         clear_points_btn = gr.Button("Clear Points")
-                    checkpoint = gr.Dropdown(label="Checkpoint", choices=["tiny", "small", "base-plus", "large"],
-                                             value="tiny")
+                    # checkpoint = gr.Dropdown(label="Checkpoint", choices=["tiny", "small", "base-plus", "large"],
+                    #                          value="tiny")
                     submit_button = gr.Button("Submit mask for tracking")
-                    mask_dir_field = gr.Text(
-                        value="", label="Path to save masks", interactive=True
-                    )
-                    save_button = gr.Button("Save masks")
+                    with gr.Row():
+                        mask_dir_field = gr.Text(
+                            value="", label="Path to save masks", interactive=True
+                        )
+                        save_button = gr.Button("Save masks")
 
                 with gr.Column():
                     input_image = gr.Image(
