@@ -62,7 +62,7 @@ class PromptGUI(object):
         self.selected_points.clear()
         self.selected_labels.clear()
         message = "Cleared points, select new points to update mask"
-        return self.image, None, message
+        return None, None, message
 
     def add_new_mask(self):
         self.cur_mask_idx += 1
@@ -99,7 +99,7 @@ class PromptGUI(object):
         self._clear_image()
         self.img_dir = img_dir
         self.img_paths = [
-            f"{img_dir}/{p}" for p in sorted(os.listdir(img_dir)) if isimage(p)
+            osp.join(img_dir, p)for p in sorted(os.listdir(img_dir)) if isimage(p)
         ]
         guru.debug(f"loaded {len(self.img_paths)} in image dir {img_dir}")
 
@@ -122,19 +122,17 @@ class PromptGUI(object):
         # self.sam_model.reset_state(self.inference_state)
         msg = (
             "SAM features extracted. "
-            "Click input image to add points, update mask, and submit when ready to start tracking"
+            "Click points to update mask, and submit when ready to start tracking"
         )
         guru.debug(f"image shape: {self.image.shape}")
-        return msg
+        return msg, self.image
 
     def set_positive(self) -> str:
         self.cur_label_val = 1.0
-        guru.debug("Selected positive label")
         return "Selecting positive points. Submit the mask to start tracking"
 
     def set_negative(self) -> str:
         self.cur_label_val = 0.0
-        guru.debug("Selected negative label")
         return "Selecting negative points. Submit the mask to start tracking"
 
     def add_point(self, frame_idx, i, j):
@@ -203,7 +201,7 @@ class PromptGUI(object):
         self.index_masks_all = [self.make_index_mask(v) for k, v in video_segments.items()]
 
         out_frames, self.color_masks_all = colorize_masks(images, self.index_masks_all)
-        out_vidpath = osp.join(self.img_dir, "../tracked_video.mp4")
+        out_vidpath = "tracked_colors.mp4"
         iio.mimwrite(out_vidpath, out_frames)
         message = f"Wrote current tracked video to {out_vidpath}."
         instruct = "Save the masks to an output directory if it looks good!"
@@ -222,12 +220,11 @@ class PromptGUI(object):
         idx = 0
         for img_path, clr_mask, id_mask in zip(self.img_paths, self.color_masks_all, self.index_masks_all):
             name = os.path.basename(img_path)
-            out_path = f"{output_dir}/{name}"
+            out_path = osp.join(output_dir, name)
             iio.imwrite(out_path, clr_mask)
-            np_out_path = f"{output_dir}/{name[:-4]}.npy"
+            np_out_path = osp.join(output_dir, f"{name[:-4]}.npy")
             if have_meta:
-                frames[idx].update(
-                    {"mask_file_path": os.path.join(Path(output_dir).name, Path(np_out_path).name)})
+                frames[idx].update({"mask_file_path": os.path.join(Path(np_out_path).parent.name, Path(np_out_path).name)})
             np.save(np_out_path, id_mask)
             idx += 1
 
@@ -298,91 +295,142 @@ def listdir(vid_dir):
     return []
 
 
-def make_demo(checkpoint_dir, model_cfg):
+def make_demo(
+        checkpoint_dir,
+        model_cfg,
+        root_dir,
+        vid_name: str = "videos",
+        img_name: str = "images",
+        mask_name: str = "masks",
+):
     prompts = PromptGUI(checkpoint_dir, model_cfg)
+
     start_instructions = (
         "Select a video file to extract frames from, "
         "or select an image directory with frames already extracted."
     )
-
+    vid_root, img_root = (osp.join(root_dir, vid_name), osp.join(root_dir, img_name))
     with gr.Blocks() as demo:
         instruction = gr.Textbox(
             start_instructions, label="Instruction", interactive=False
         )
-        with gr.Tab("Input images"):
-            with gr.Row():
-                with gr.Column():
-                    image_dir_textbox = gr.Textbox(value=None, label="Input image directory", interactive=True)
+        with gr.Row():
+            root_dir_field = gr.Text(root_dir, label="Dataset root directory")
+            vid_name_field = gr.Text(vid_name, label="Video subdirectory name")
+            img_name_field = gr.Text(img_name, label="Image subdirectory name")
+            mask_name_field = gr.Text(mask_name, label="Mask subdirectory name")
 
-                    # Initialize slider range to update dynamically
-                    frame_index_slider = gr.Slider(
-                        label="Frame index",
-                        minimum=0,
-                        maximum=len(prompts.img_paths) - 1,
-                        value=0,
-                        step=1,
-                    )
+        with gr.Row():
+            with gr.Column():
+                vid_files = listdir(vid_root)
+                vid_files_field = gr.Dropdown(label="Video files", choices=vid_files)
+                input_video_field = gr.Video(label="Input Video")
 
-                    with gr.Row():
-                        point_type = gr.Radio(label="point type", choices=["include", "exclude"], value="include")
-                        clear_points_btn = gr.Button("Clear Points")
-                        reset_button = gr.Button("Reset model state")
-                    # checkpoint = gr.Dropdown(label="Checkpoint", choices=["tiny", "small", "base-plus", "large"],
-                    #                          value="tiny")
-                    submit_button = gr.Button("Submit mask for tracking")
-                    with gr.Row():
-                        mask_dir_field = gr.Text(
-                            value="", label="Path to save masks", interactive=True
-                        )
-                        save_button = gr.Button("Save masks")
-
-                with gr.Column():
-                    input_image = gr.Image(
-                        prompts.set_input_image(0),  # Static, needs to be dynamic
-                        label="Input Frame",
-                        every=1,
-                        interactive=False,
-                    )
-
-                    final_video = gr.Video(label="Masked video")
-
-        with gr.Tab("Input video"):
-            with gr.Row():
-                with gr.Column():
-                    video_file_field = gr.Video(label="Upload video")
-                    downsample = gr.Number(value=2, label="Downsample factor")
-                    extract_dir = gr.Textbox(label="Where to extract frames", interactive=True)
+                with gr.Row():
+                    start_time = gr.Number(0, label="Start time (s)")
+                    end_time = gr.Number(0, label="End time (s)")
+                    sel_fps = gr.Number(30, label="FPS")
+                    sel_height = gr.Number(540, label="Height")
                     extract_button = gr.Button("Extract frames")
 
-                with gr.Column():
-                    duration = gr.Number(value=0, label="Duration", interactive=False)
-                    width = gr.Number(value=0, label="Width", interactive=False)
-                    height = gr.Number(value=0, label="Height", interactive=False)
-                    fps = gr.Number(value=0, label="FPS", interactive=False)
+            with gr.Column():
+                img_dir = img_root
+                img_dir_field = gr.Text(
+                    img_dir, label="Input directory", interactive=True
+                )
+                prompts.set_img_dir(img_dir)
+                frame_index = gr.Slider(
+                    label="Frame index",
+                    minimum=0,
+                    maximum=len(prompts.img_paths) - 1,
+                    value=0,
+                    step=1,
+                )
+                sam_button = gr.Button("Get SAM features")
+                reset_button = gr.Button("Reset")
+                input_image = gr.Image(
+                    prompts.set_input_image(0),
+                    label="Input Frame",
+                    every=1,
+                )
+                with gr.Row():
+                    pos_button = gr.Button("Toggle positive")
+                    neg_button = gr.Button("Toggle negative")
+                clear_button = gr.Button("Clear points")
 
+            with gr.Column():
+                output_img = gr.Image(label="Current selection")
+                add_button = gr.Button("Add new mask")
+                submit_button = gr.Button("Submit mask for tracking")
+                final_video = gr.Video(label="Masked video")
+                mask_dir_field = gr.Text(
+                    str(osp.join(root_dir, mask_name)), label="Path to save masks", interactive=False
+                )
+                save_button = gr.Button("Save masks")
 
-        # Function to dynamically update slider and image
-        def update_image_dir(img_dir: str):
-            num_img = prompts.set_img_dir(img_dir)
-            slider_update = gr.update(maximum=num_img - 1, value=0)
-            image_update = gr.update(value=prompts.set_input_image(0))  # Reset image to first frame
-            mask_dir_update = gr.update(value=str(Path(img_dir).parent / "mask"))
-            msg = (
-                f"Loaded {num_img} images from {img_dir}. Choose a frame to run SAM!"
+        def update_vid_root(root_dir, vid_name):
+            vid_root = osp.join(root_dir, vid_name)
+            vid_paths = listdir(vid_root)
+            guru.debug(f"Updating video paths: {vid_paths=}")
+            return vid_paths
+
+        def update_img_root(root_dir, img_name):
+            img_root = osp.join(root_dir, img_name)
+            guru.debug(f"Updating img dir: {img_root=}")
+            return img_root
+
+        def update_mask_dir(root_dir, mask_name):
+            return osp.join(root_dir, mask_name)
+
+        def update_root_paths(root_dir, vid_name, img_name, mask_name):
+            return (
+                update_vid_root(root_dir, vid_name),
+                update_img_root(root_dir, img_name),
+                update_mask_dir(root_dir, mask_name),
             )
-            return slider_update, image_update, mask_dir_update, msg
 
-        # Function to dynamically update image based on slider value
-        def update_image(frame_index):
-            return gr.update(value=prompts.set_input_image(frame_index))
+        def select_video(root_dir, vid_name, seq_file):
+            guru.debug(f"Selected video: {seq_file=}")
+            vid_path = osp.join(root_dir, vid_name, seq_file)
+            return vid_path
 
-        def update_point_type(point_type: str):
-            assert point_type in ["include", "exclude"]
-            if point_type == "include":
-                prompts.set_positive()
-            else:
-                prompts.set_negative()
-            return
+        def extract_frames(
+                root_dir, vid_name, img_name, vid_file, start, end, fps, height, ext="png"
+        ):
+            seq_name = os.path.splitext(vid_file)[0]
+            vid_path = osp.join(root_dir, vid_name, vid_file)
+            out_dir = osp.join(root_dir, img_name)
+            guru.debug(f"Extracting frames to {out_dir}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            def make_time(seconds):
+                return datetime.time(
+                    seconds // 3600, (seconds % 3600) // 60, seconds % 60
+                )
+
+            start_time = make_time(start).strftime("%H:%M:%S")
+            end_time = make_time(end).strftime("%H:%M:%S")
+            cmd = (
+                f"ffmpeg -ss {start_time} -to {end_time} -i {vid_path} "
+                f"-vf 'scale=-1:{height},fps={fps}' {out_dir}/%05d.{ext}"
+            )
+            print(cmd)
+            subprocess.call(cmd, shell=True)
+            return out_dir
+
+        def select_image_dir(root_dir, img_name, seq_name):
+            img_dir = osp.join(root_dir, img_name, seq_name)
+            guru.debug(f"Selected image dir: {img_dir}")
+            return seq_name, img_dir
+
+        def update_image_dir(root_dir, img_name):
+            img_dir = osp.join(root_dir, img_name)
+            num_imgs = prompts.set_img_dir(img_dir)
+            slider = gr.Slider(minimum=0, maximum=num_imgs - 1, value=0, step=1)
+            message = (
+                f"Loaded {num_imgs} images from {img_dir}. Choose a frame to run SAM!"
+            )
+            return slider, message
 
         def get_select_coords(frame_idx, img, evt: gr.SelectData):
             i = evt.index[1]  # type: ignore
@@ -395,90 +443,76 @@ def make_demo(checkpoint_dir, model_cfg):
             out = draw_points(out_u, prompts.selected_points, prompts.selected_labels)
             return out
 
-        def extract_frames(
-                vid_file, out_dir, downsample = 1, ext="jpg"
-        ):
-            guru.debug(f"Extracting frames to {out_dir}")
-            os.makedirs(out_dir, exist_ok=True)
-            cmd = f"ffmpeg -i {vid_file} -vf 'select=not(mod(n\,{downsample}))' -vsync vfr -q:v 2 {out_dir}/%03d.jpg"
-            guru.debug(cmd)
-            subprocess.call(cmd, shell=True)
-            return out_dir, f"Extracted frames to {out_dir}"
+        # update the root directory
+        # and associated video, image, and mask root directories
+        root_dir_field.submit(
+            update_root_paths,
+            [
+                root_dir_field,
+                vid_name_field,
+                img_name_field,
+                mask_name_field,
+            ],
+            outputs=[vid_files_field, img_dir_field, mask_dir_field],
+        )
 
-        def get_video_metadata(video_path):
-            # ffprobe command to extract metadata in JSON format
-            cmd = [
-                "ffprobe",
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,r_frame_rate,duration",
-                "-of", "json",
-                video_path
-            ]
+        vid_name_field.submit(
+            update_vid_root,
+            [root_dir_field, vid_name_field],
+            outputs=[vid_files_field],
+        )
 
-            guru.debug(cmd)
+        mask_name_field.submit(
+            update_mask_dir,
+            [root_dir_field, mask_name_field],
+            outputs=[mask_dir_field],
+        )
 
-            # Run ffprobe command and capture output
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            metadata = json.loads(result.stdout)
+        # selecting a video file
+        vid_files_field.select(
+            select_video,
+            [root_dir_field, vid_name_field, vid_files_field],
+            outputs=[input_video_field],
+        )
 
-            # Extract required metadata
-            width = metadata['streams'][0]['width']
-            height = metadata['streams'][0]['height']
-            frame_rate = eval(metadata['streams'][0]['r_frame_rate'])
-            duration = float(metadata['streams'][0]['duration'])
-
-            guru.debug(f"meta info w:{width} h:{height} fps:{frame_rate} duration:{duration}")
-
-            return duration, frame_rate, height, width
-
-        # Attach event handlers
-        image_dir_textbox.submit(
+        # when the img_dir_field changes
+        img_dir_field.change(
             update_image_dir,
-            [image_dir_textbox],
-            [frame_index_slider, input_image, mask_dir_field, instruction]  # Include input_image to reset it
-        ).then(prompts.get_sam_features, outputs=[instruction])
-
-        frame_index_slider.change(
-            prompts.set_input_image,
-            [frame_index_slider],
-            [input_image]
-        )
-
-        input_image.select(get_select_coords,
-                    [frame_index_slider, input_image],
-                    [input_image])
-
-        point_type.change(
-            update_point_type,
-            [point_type],
-        )
-
-        reset_button.click(prompts.reset)
-
-        clear_points_btn.click(prompts.clear_points,
-                               outputs=[input_image, final_video, instruction])
-
-        submit_button.click(prompts.run_tracker, outputs=[final_video, instruction])
-        save_button.click(
-            prompts.save_masks_to_dir, [mask_dir_field], outputs=[instruction]
-        )
-
-        video_file_field.upload(
-            get_video_metadata,
-            video_file_field,
-            outputs=[duration, fps, height, width]
+            [root_dir_field, img_name_field],
+            [frame_index, instruction],
         )
 
         # extracting frames from video
         extract_button.click(
             extract_frames,
             [
-                video_file_field,
-                extract_dir,
-                downsample,
+                root_dir_field,
+                vid_name_field,
+                img_name_field,
+                vid_files_field,
+                start_time,
+                end_time,
+                sel_fps,
+                sel_height,
             ],
-            outputs=[image_dir_textbox, instruction],
+            outputs=[img_dir_field],
+        )
+
+        frame_index.change(prompts.set_input_image, [frame_index], [input_image])
+        input_image.select(get_select_coords, [frame_index, input_image], [output_img])
+
+        sam_button.click(prompts.get_sam_features, outputs=[instruction, input_image])
+        reset_button.click(prompts.reset)
+        clear_button.click(
+            prompts.clear_points, outputs=[output_img, final_video, instruction]
+        )
+        pos_button.click(prompts.set_positive, outputs=[instruction])
+        neg_button.click(prompts.set_negative, outputs=[instruction])
+
+        add_button.click(prompts.add_new_mask, outputs=[output_img, instruction])
+        submit_button.click(prompts.run_tracker, outputs=[final_video, instruction])
+        save_button.click(
+            prompts.save_masks_to_dir, [mask_dir_field], outputs=[instruction]
         )
 
     return demo
@@ -491,6 +525,10 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8890)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/sam2_hiera_tiny.pt")
     parser.add_argument("--model_cfg", type=str, default="sam2_hiera_t.yaml")
+    parser.add_argument("--root_dir", type=str, required=True)
+    parser.add_argument("--vid_name", type=str, default="videos")
+    parser.add_argument("--img_name", type=str, default="images")
+    parser.add_argument("--mask_name", type=str, default="masks")
     args = parser.parse_args()
 
     # device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -498,5 +536,8 @@ if __name__ == "__main__":
     demo = make_demo(
         args.checkpoint_dir,
         args.model_cfg,
+        args.root_dir,
+        args.vid_name,
+        args.img_name,
     )
-    demo.launch(server_port=args.port)
+    demo.launch(server_port=args.port, share=True)
