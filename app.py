@@ -476,7 +476,7 @@ def make_demo(checkpoint_dir, model_cfg):
             [
                 video_file_field,
                 extract_dir,
-         it        downsample,
+                downsample,
             ],
             outputs=[image_dir_textbox, instruction],
         )
