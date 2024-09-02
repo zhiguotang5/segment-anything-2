@@ -10,10 +10,8 @@ if torch.cuda.get_device_properties(0).major >= 8:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-# torch.multiprocessing.set_start_method("spawn")
 
 import colorsys
-import datetime
 import os
 import os.path as osp
 import subprocess
@@ -491,6 +489,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8890)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints/sam2_hiera_tiny.pt")
     parser.add_argument("--model_cfg", type=str, default="sam2_hiera_t.yaml")
+    parser.add_argument("--shared", action="store_true")
     args = parser.parse_args()
 
     # device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -499,4 +498,6 @@ if __name__ == "__main__":
         args.checkpoint_dir,
         args.model_cfg,
     )
-    demo.launch(server_port=args.port)
+
+    shared = True if args.shared else False
+    demo.launch(server_port=args.port, share=shared)
