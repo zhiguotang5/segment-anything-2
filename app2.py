@@ -15,6 +15,7 @@ if torch.cuda.get_device_properties(0).major >= 8:
 import colorsys
 import datetime
 import os
+import os.path as osp
 import subprocess
 
 import cv2
@@ -202,7 +203,7 @@ class PromptGUI(object):
         self.index_masks_all = [self.make_index_mask(v) for k, v in video_segments.items()]
 
         out_frames, self.color_masks_all = colorize_masks(images, self.index_masks_all)
-        out_vidpath = "tracked_colors.mp4"
+        out_vidpath = osp.join(self.img_dir, "../tracked_video.mp4")
         iio.mimwrite(out_vidpath, out_frames)
         message = f"Wrote current tracked video to {out_vidpath}."
         instruct = "Save the masks to an output directory if it looks good!"
@@ -325,6 +326,7 @@ def make_demo(checkpoint_dir, model_cfg):
                     with gr.Row():
                         point_type = gr.Radio(label="point type", choices=["include", "exclude"], value="include")
                         clear_points_btn = gr.Button("Clear Points")
+                        reset_button = gr.Button("Reset model state")
                     # checkpoint = gr.Dropdown(label="Checkpoint", choices=["tiny", "small", "base-plus", "large"],
                     #                          value="tiny")
                     submit_button = gr.Button("Submit mask for tracking")
@@ -339,12 +341,25 @@ def make_demo(checkpoint_dir, model_cfg):
                         prompts.set_input_image(0),  # Static, needs to be dynamic
                         label="Input Frame",
                         every=1,
+                        interactive=False,
                     )
 
                     final_video = gr.Video(label="Masked video")
 
         with gr.Tab("Input video"):
-            video_file_field = gr.Video(label="Upload video")
+            with gr.Row():
+                with gr.Column():
+                    video_file_field = gr.Video(label="Upload video")
+                    downsample = gr.Number(value=2, label="Downsample factor")
+                    extract_dir = gr.Textbox(label="Where to extract frames", interactive=True)
+                    extract_button = gr.Button("Extract frames")
+
+                with gr.Column():
+                    duration = gr.Number(value=0, label="Duration", interactive=False)
+                    width = gr.Number(value=0, label="Width", interactive=False)
+                    height = gr.Number(value=0, label="Height", interactive=False)
+                    fps = gr.Number(value=0, label="FPS", interactive=False)
+
 
         # Function to dynamically update slider and image
         def update_image_dir(img_dir: str):
@@ -380,6 +395,43 @@ def make_demo(checkpoint_dir, model_cfg):
             out = draw_points(out_u, prompts.selected_points, prompts.selected_labels)
             return out
 
+        def extract_frames(
+                vid_file, out_dir, downsample = 1, ext="jpg"
+        ):
+            guru.debug(f"Extracting frames to {out_dir}")
+            os.makedirs(out_dir, exist_ok=True)
+            cmd = f"ffmpeg -i {vid_file} -vf 'select=not(mod(n\,{downsample}))' -vsync vfr -q:v 2 {out_dir}/%03d.jpg"
+            guru.debug(cmd)
+            subprocess.call(cmd, shell=True)
+            return out_dir, f"Extracted frames to {out_dir}"
+
+        def get_video_metadata(video_path):
+            # ffprobe command to extract metadata in JSON format
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,r_frame_rate,duration",
+                "-of", "json",
+                video_path
+            ]
+
+            guru.debug(cmd)
+
+            # Run ffprobe command and capture output
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            metadata = json.loads(result.stdout)
+
+            # Extract required metadata
+            width = metadata['streams'][0]['width']
+            height = metadata['streams'][0]['height']
+            frame_rate = eval(metadata['streams'][0]['r_frame_rate'])
+            duration = float(metadata['streams'][0]['duration'])
+
+            guru.debug(f"meta info w:{width} h:{height} fps:{frame_rate} duration:{duration}")
+
+            return duration, frame_rate, height, width
+
         # Attach event handlers
         image_dir_textbox.submit(
             update_image_dir,
@@ -402,12 +454,31 @@ def make_demo(checkpoint_dir, model_cfg):
             [point_type],
         )
 
+        reset_button.click(prompts.reset)
+
         clear_points_btn.click(prompts.clear_points,
                                outputs=[input_image, final_video, instruction])
 
         submit_button.click(prompts.run_tracker, outputs=[final_video, instruction])
         save_button.click(
             prompts.save_masks_to_dir, [mask_dir_field], outputs=[instruction]
+        )
+
+        video_file_field.upload(
+            get_video_metadata,
+            video_file_field,
+            outputs=[duration, fps, height, width]
+        )
+
+        # extracting frames from video
+        extract_button.click(
+            extract_frames,
+            [
+                video_file_field,
+                extract_dir,
+                downsample,
+            ],
+            outputs=[image_dir_textbox, instruction],
         )
 
     return demo
